@@ -5,6 +5,7 @@ from numba import njit
 from abc import ABC, abstractmethod
 
 def calc_out_shape(input_matrix_shape, out_channels, kernel_size, stride, padding):
+    ''' calculating output shape after conv layer '''
     batch_size, channels_count, input_height, input_width = input_matrix_shape
     output_height = (input_height + 2 * padding - (kernel_size - 1) - 1) // stride + 1
     output_width = (input_width + 2 * padding - (kernel_size - 1) - 1) // stride + 1
@@ -46,82 +47,66 @@ class Conv2dMatrix(ABCConv2d):
                                 self.stride,
                                 padding=0)
             
-        # создадим выходной тензор, заполненный нулями         
+        # create output tensor filled by zeros         
         output_tensor = np.zeros((image_size, out_channels, output_height, output_width))
         
-        # вычисление свертки с использованием циклов.
-        # цикл по входным батчам(изображениям)
+        # calculating convolution using loops
+        # loop through input batches
         for num_image, image in enumerate(input_tensor): 
              
-            # цикл по фильтрам (количество фильтров совпадает с количеством выходных каналов)  
+            # filter loop (num of filters equals to output channels)  
             for num_filter, filter_ in enumerate(self.kernel):
             
-                # цикл по размерам выходного изображения
+                # Spatiality loop
                 for i in range(output_height):
                     for j in range(output_width): 
                         
-                        # вырезаем кусочек из батча (сразу по всем входным каналам)
+                        # cut slice of the batch (over all output channels)
                         current_row = self.stride*i
                         current_column = self.stride*j
                         current_slice = image[:, current_row:current_row + self.kernel_size, current_column:current_column + self.kernel_size]
                         
-                        # умножаем кусочек на фильтр
+                        # apply convolution transform
                         res = float((current_slice * filter_).sum())
                         
-                        # заполняем ячейку в выходном тензоре
+                        # fill corresponding output cell
                         output_tensor[num_image,num_filter,i,j] = res
                         
         return output_tensor
 
-class ABCMaxPool(ABC):
-    def __init__(self, in_channels, out_channels, pool_size, stride):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.pool_size = pool_size
-        self.stride = stride
 
-    def set_kernel(self, kernel):
-        self.kernel = kernel
-
-    @abstractmethod
-    def __call__(self, input_tensor):
-        pass
-
-class MaxPool2D(ABCMaxPool):
+class MaxPool2D(ABCConv2d):
     def __call__(self, input_tensor):
         image_size, out_channels, output_height, output_width = calc_out_shape(
                                 input_tensor.shape, 
                                 self.out_channels,
-                                self.pool_size,
+                                self.kernel_size,
                                 self.stride,
                                 padding=0)
 
         mat_out = np.zeros((image_size, out_channels, output_height, output_width))
 
-        for num_image, image in enumerate(input_tensor): 
-            print(num_image, image.shape[0], image.shape)
-            # цикл по фильтрам (количество фильтров совпадает с количеством выходных каналов)  
+        for num_image, image in enumerate(input_tensor):   
             for num_chnl in range(image.shape[0]):
-                # цикл по размерам выходного изображения
+
                 for i in range(output_height):
                     for j in range(output_width): 
                         
-                        # вырезаем кусочек из батча (сразу по всем входным каналам)
+                        # cut slice over one channel
                         current_row = self.stride*i
                         current_column = self.stride*j
-                        current_slice = image[num_chnl, current_row:current_row + self.pool_size, current_column:current_column + self.pool_size]
+                        current_slice = image[num_chnl, current_row:current_row + self.kernel_size, current_column:current_column + self.kernel_size]
                         
-                        # умножаем кусочек на фильтр
+                        # do max pool 
                         res = float(current_slice.max())
-                        print(res)
-                        # заполняем ячейку в выходном тензоре
+                        # fill corresponding output cell
                         mat_out[num_image,num_chnl,i,j] = res
         return mat_out
 
-class InctanceNorm:
+class InstanceNorm:
     def __call__(self, input_tensor, gamma=1, betta=0, eps=1e-3):
-        Mu = input_tensor.sum(axis=(0,1)) / input_tensor.shape[1]
-        sigma = np.std(input_tensor, axis=(0,1))
+        Mu = np.mean(input_tensor, axis=(0,1), keepdims=True) 
+        sigma = np.std(input_tensor, axis=(0,1), keepdims=True)
         normed_tensor = ((input_tensor - Mu)/(np.sqrt(sigma**2 + eps)))*gamma + betta
         return normed_tensor
 
@@ -134,22 +119,35 @@ def softmax(x):
     e_x = np.exp(x - np.max(x))
     return e_x / e_x.sum()
         
-kernel = np.random.rand(5, 3, 3)
+class FeedForward:
+    def __init__(self):
+        kernel = np.random.rand(5, 3, 3)
 
-in_channels = kernel.shape[1]
-out_channels = kernel.shape[0]
-kernel_size = kernel.shape[2]
-stride = 1
-layer = Conv2dMatrix(in_channels, out_channels, kernel_size, stride)
-bn = InctanceNorm()
-relu = Relu()
-max_pool = MaxPool2D(out_channels, out_channels, 2, 2)
-layer.set_kernel(kernel)
-batch_size = 1
-input_height=8
-input_width=8
-input_matrix = np.arange(0, batch_size * in_channels *
-                                input_height * input_width).reshape(batch_size, in_channels, input_height, input_width)
-lay = layer(input_matrix)
-pol = max_pool(lay)
-print(softmax(max_pool(relu(bn(lay)))))
+        in_channels = kernel.shape[1]
+        out_channels = kernel.shape[0]
+        kernel_size = kernel.shape[2]
+        stride = 1
+        self.conv2d = Conv2dMatrix(in_channels, out_channels, kernel_size, stride)
+        self.conv2d.set_kernel(kernel)
+
+        self.In = InstanceNorm()
+        self.relu = Relu()
+        self.max_pool = MaxPool2D(out_channels, out_channels, 2, 2)
+
+    def forward(self, x):
+        x = self.conv2d(x)
+        x = self.In(x)
+        x = self.relu(x)
+        x = self.max_pool(x)
+        return softmax(x)
+
+def main():
+    input_img = cv.imread("..\image_example\cats.jpg")
+    input_img = cv.resize(input_img, (32,32)).reshape(1, 3, 32, 32)
+    Net = FeedForward()
+    out = Net.forward(input_img)
+    print("forward out: \n", out)
+    print("output shape: \n", out.shape)
+
+if __name__ == '__main__':
+    main()
