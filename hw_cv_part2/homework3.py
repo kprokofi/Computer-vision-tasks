@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numba import njit
 from abc import ABC, abstractmethod
+from scipy.special import softmax
 
 def calc_out_shape(input_matrix_shape, out_channels, kernel_size, stride, padding):
     ''' calculating output shape after conv layer '''
@@ -27,18 +28,6 @@ class ABCConv2d(ABC):
         pass
 
 class Conv2dMatrix(ABCConv2d):
-    # Функция преобразование кернела в матрицу нужного вида.
-    def _unsqueeze_kernel(self, input, output_height, output_width):
-        _, in_channels, in_height, in_width = input.shape
-        ku_size = [self.out_channels, output_height, output_width, in_channels, in_height, in_width]
-        kernel_unsqueezed = np.zeros(ku_size, dtype=np.float32)
-        for i in range(output_height):
-            for j in range(output_width):
-                h_slice = slice(i*self.stride, i*self.stride+self.kernel_size)
-                w_slice = slice(j*self.stride, j*self.stride+self.kernel_size)
-                kernel_unsqueezed[:, i, j, :, h_slice, w_slice] = self.kernel
-        return kernel_unsqueezed.reshape(-1, in_channels*in_height*in_width)
-
     def __call__(self, input_tensor):
         image_size, out_channels, output_height, output_width = calc_out_shape(
                                 input_tensor.shape, 
@@ -103,48 +92,54 @@ class MaxPool2D(ABCConv2d):
                         mat_out[num_image,num_chnl,i,j] = res
         return mat_out
 
-class InstanceNorm:
+
+class LayerNorm:
     def __call__(self, input_tensor, gamma=1, betta=0, eps=1e-3):
-        Mu = np.mean(input_tensor, axis=(0,1), keepdims=True) 
-        sigma = np.std(input_tensor, axis=(0,1), keepdims=True)
-        normed_tensor = ((input_tensor - Mu)/(np.sqrt(sigma**2 + eps)))*gamma + betta
-        return normed_tensor
+        result = np.zeros(input_tensor.shape)
+        for b, batch in enumerate(input_tensor):
+            for c, image in enumerate(batch): 
+                Mu = np.mean(image)
+                sigma = np.std(image)
+                result[b,c,:,:] = ((image - Mu)/(np.sqrt(sigma**2 + eps)))*gamma + betta
+        return result
+
 
 class Relu:
     def __call__(self, input_tensor):
         return np.where(input_tensor > 0, input_tensor, 0)
 
-def softmax(x):
-    """Compute softmax values for each sets of scores in x."""
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum()
-        
-class FeedForward:
-    def __init__(self):
-        kernel = np.random.rand(5, 3, 3)
 
+def custom_softmax(x):
+    # """Compute softmax values per pixel in layers."""
+    e_x = np.exp(x - np.max(x, axis=1))
+    return e_x / np.sum(e_x, axis=1)
+
+
+class FeedForward:
+    def __init__(self, stride=1):
+        kernel = np.random.randint(-10, 10, 5*3*3).reshape(5,3,3)
         in_channels = kernel.shape[1]
         out_channels = kernel.shape[0]
         kernel_size = kernel.shape[2]
-        stride = 1
+
         self.conv2d = Conv2dMatrix(in_channels, out_channels, kernel_size, stride)
         self.conv2d.set_kernel(kernel)
-
-        self.In = InstanceNorm()
+        self.LN = LayerNorm()
         self.relu = Relu()
         self.max_pool = MaxPool2D(out_channels, out_channels, 2, 2)
 
     def forward(self, x):
         x = self.conv2d(x)
-        x = self.In(x)
+        x = self.LN(x)
         x = self.relu(x)
         x = self.max_pool(x)
-        return softmax(x)
+        return custom_softmax(x)
+
 
 def main():
     input_img = cv.imread("..\image_example\cats.jpg")
-    input_img = cv.resize(input_img, (32,32)).reshape(1, 3, 32, 32)
-    Net = FeedForward()
+    input_img = cv.resize(input_img, (32,32)).reshape(1, 3, 32, 32) # BxCxWxH
+    Net = FeedForward(stride=1)
     out = Net.forward(input_img)
     print("forward out: \n", out)
     print("output shape: \n", out.shape)
